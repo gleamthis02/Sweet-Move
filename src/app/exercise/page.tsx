@@ -1,5 +1,5 @@
 
-import PoseCamera from "../../components/pose/PoseCamera";
+import PoseCamera from "@/components/pose/PoseCamera";
 
 export default function ExercisePage() {
   return (
@@ -7,7 +7,7 @@ export default function ExercisePage() {
       <div className="mx-auto max-w-4xl space-y-6">
         <header>
           <h1 className="text-3xl font-bold text-gray-900">
-            SilverMove
+            Sweet Move
           </h1>
 
           <p className="text-gray-600 mt-2">

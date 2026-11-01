@@ -1,0 +1,34 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/exercise/layout,_N_T_/exercise/page,_N_T_/exercise"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/exercise/__PAGE__"
+  ],
+  "prefetchHints": {
+    "hints": 64,
+    "slots": {
+      "children": {
+        "hints": 96,
+        "slots": {
+          "children": {
+            "hints": 160,
+            "slots": null
+          }
+        }
+      }
+    }
+  },
+  "routeCache": {
+    "key": "/route-cache/APP_PAGE/74b732da0d0bce833b469d4a3dc51e583811ebae9177c8eabe4f1308ba721806/$/exercise",
+    "owner": {
+      "kind": "APP_PAGE",
+      "sourceRoute": "/exercise/page"
+    },
+    "isFallback": false
+  }
+}
