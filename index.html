@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pose Detection</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --accent:#22c55e; --text:#f1f5f9; --muted:#94a3b8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, "Noto Sans Thai", sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.4rem; margin: 0 0 12px; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; align-items:center; }
+  select, button { font: inherit; padding: 10px 16px; border-radius: 10px; border: none; }
+  select { background: var(--card); color: var(--text); max-width: 100%; }
+  button { background: var(--accent); color:#052e16; font-weight:700; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.secondary { background: var(--card); color: var(--text); }
+  label { color: var(--muted); font-size:.9rem; display:flex; gap:6px; align-items:center; }
+  .stage { position:relative; width:100%; aspect-ratio: 4/3; background:#000; border-radius:16px; overflow:hidden; }
+  video, canvas { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; transform: scaleX(-1); }
+  .status { position:absolute; top:12px; left:12px; right:12px; display:flex; justify-content:space-between; gap:8px; pointer-events:none; }
+  .pill { background: rgba(15,23,42,.75); padding: 8px 14px; border-radius: 12px; font-weight:700; }
+  .msg { position:absolute; bottom:12px; left:12px; right:12px; text-align:center; background: rgba(15,23,42,.75); padding:8px; border-radius:12px; }
+  .desc { color: var(--muted); font-size:.9rem; margin-top:12px; line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🧍 Pose Detection</h1>
+
+  <div class="controls">
+    <select id="pose"></select>
+    <label><input type="checkbox" id="seatedOnly"> เฉพาะท่านั่งได้</label>
+    <button id="startBtn" disabled>กำลังโหลดโมเดล...</button>
+    <button id="stopBtn" class="secondary" disabled>หยุด</button>
+  </div>
+
+  <div class="stage">
+    <video id="video" playsinline muted></video>
+    <canvas id="canvas"></canvas>
+    <div class="status">
+      <div class="pill" id="poseName">-</div>
+      <div class="pill" id="phase">-</div>
+      <div class="pill" id="reps">0 ครั้ง</div>
+    </div>
+    <div class="msg" id="msg">กด "เริ่ม" แล้วอนุญาตให้ใช้กล้อง</div>
+  </div>
+
+  <p class="desc" id="desc"></p>
+</div>
+
+<script type="module">
+import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import { POSES, getPose, PoseTracker, LM } from "./poses.js";
+
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d");
+const startBtn = $("startBtn"), stopBtn = $("stopBtn");
+
+const PHASE_LABEL = {
+  UP: "⬆️ ขึ้น", DOWN: "⬇️ ลง", LEFT: "⬅️ ซ้าย", RIGHT: "ขวา ➡️",
+  TOP: "บน", SIDE: "ข้าง", BOTTOM: "ล่าง",
+};
+
+let landmarker, stream, rafId, lastVideoTime = -1;
+let running = false;
+let tracker;
+
+// ---------- รายการท่า ----------
+function buildPoseList() {
+  const select = $("pose"), seatedOnly = $("seatedOnly").checked;
+  const prev = select.value;
+  select.innerHTML = "";
+  for (const level of ["ง่าย", "กลาง", "ยาก"]) {
+    const group = document.createElement("optgroup");
+    group.label = "ระดับ" + level;
+    for (const p of POSES.filter(p => p.level === level && (!seatedOnly || p.seated))) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = `${p.no}. ${p.name}${p.seated ? " 🪑" : ""}${p.jump ? " 🦘" : ""}`;
+      group.appendChild(opt);
+    }
+    if (group.children.length) select.appendChild(group);
+  }
+  if ([...select.options].some(o => o.value === prev)) select.value = prev;
+  selectPose();
+}
+
+function selectPose() {
+  const pose = getPose($("pose").value);
+  if (!pose) return;
+  tracker = new PoseTracker(pose, {
+    // ส่งเหตุการณ์ออกไปให้ส่วนอื่นของเว็บนำไปใช้ต่อได้
+    onPhase: d => window.dispatchEvent(new CustomEvent("pose:phase", { detail: d })),
+    onRep: d => window.dispatchEvent(new CustomEvent("pose:rep", { detail: d })),
+  });
+  $("poseName").textContent = pose.name;
+  $("phase").textContent = "-";
+  $("reps").textContent = "0 ครั้ง";
+  $("desc").textContent = pose.desc;
+}
+
+$("pose").addEventListener("change", selectPose);
+$("seatedOnly").addEventListener("change", buildPoseList);
+
+// ตัวอย่างการรับเหตุการณ์ (ลบทิ้งได้)
+window.addEventListener("pose:phase", e => console.log("phase", e.detail.pose.id, e.detail.phase));
+window.addEventListener("pose:rep", e => console.log("rep", e.detail.pose.id, e.detail.reps));
+
+// ---------- โมเดล ----------
+async function loadModel() {
+  const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  landmarker = await PoseLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+      delegate: "GPU"
+    },
+    runningMode: "VIDEO",
+    numPoses: 1
+  });
+  startBtn.disabled = false;
+  startBtn.textContent = "เริ่ม";
+}
+
+// ---------- กล้อง ----------
+async function openCamera() {
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: 640, height: 480, facingMode: "user" }, audio: false
+  });
+  video.srcObject = stream;
+  await video.play();
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+}
+function closeCamera() {
+  stream?.getTracks().forEach(t => t.stop());
+  stream = null;
+}
+
+// ---------- วาดโครงกระดูก ----------
+function drawPose(lm) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!lm) return;
+  const w = canvas.width, h = canvas.height;
+  ctx.lineWidth = 4; ctx.strokeStyle = "#22c55e";
+  for (const { start, end } of PoseLandmarker.POSE_CONNECTIONS) {
+    const a = lm[start], b = lm[end];
+    if (a.visibility < 0.5 || b.visibility < 0.5) continue;
+    ctx.beginPath(); ctx.moveTo(a.x * w, a.y * h); ctx.lineTo(b.x * w, b.y * h); ctx.stroke();
+  }
+  ctx.fillStyle = "#facc15";
+  for (const p of lm) {
+    if (p.visibility < 0.5) continue;
+    ctx.beginPath(); ctx.arc(p.x * w, p.y * h, 5, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function visibilityHint(pose) {
+  if (pose.need.some(i => i === LM.L_ANKLE || i === LM.R_ANKLE)) return "ถอยให้เห็นตั้งแต่ศีรษะถึงข้อเท้า";
+  if (pose.need.some(i => i >= LM.L_HIP)) return "ถอยให้เห็นถึงเข่า";
+  return "ให้เห็นช่วงบนของร่างกาย (ศีรษะ-ไหล่-แขน)";
+}
+
+// ---------- ลูปตรวจจับ ----------
+function loop() {
+  if (!running) return;
+  if (video.currentTime !== lastVideoTime && video.readyState >= 2) {
+    lastVideoTime = video.currentTime;
+    const res = landmarker.detectForVideo(video, performance.now());
+    const lm = res.landmarks?.[0];
+    drawPose(lm);
+
+    const r = tracker.update(lm, video.videoWidth / video.videoHeight);
+    if (r.status === "no_person") $("msg").textContent = "ไม่พบคน ลองยืน/นั่งให้อยู่ในกรอบ";
+    else if (r.status === "not_visible") $("msg").textContent = "⚠️ " + visibilityHint(tracker.pose);
+    else $("msg").textContent = r.note ? "⚠️ " + r.note : "กำลังตรวจจับ...";
+    if (r.phase) $("phase").textContent = PHASE_LABEL[r.phase] ?? r.phase;
+    $("reps").textContent = r.reps + " ครั้ง";
+  }
+  rafId = requestAnimationFrame(loop);
+}
+
+async function start() {
+  startBtn.disabled = true;
+  try { await openCamera(); }
+  catch (e) { $("msg").textContent = "เปิดกล้องไม่ได้: " + e.message; startBtn.disabled = false; return; }
+  tracker.reset();
+  $("reps").textContent = "0 ครั้ง";
+  running = true;
+  stopBtn.disabled = false;
+  loop();
+}
+
+function stop() {
+  running = false;
+  cancelAnimationFrame(rafId);
+  closeCamera();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  $("phase").textContent = "-";
+  startBtn.disabled = false; stopBtn.disabled = true;
+  $("msg").textContent = "หยุดแล้ว";
+}
+
+startBtn.addEventListener("click", start);
+stopBtn.addEventListener("click", stop);
+
+buildPoseList();
+loadModel().catch(e => { startBtn.textContent = "โหลดโมเดลไม่สำเร็จ"; $("msg").textContent = String(e); });
+</script>
+</body>
+</html>
